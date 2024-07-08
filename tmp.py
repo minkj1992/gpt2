@@ -1,64 +1,51 @@
-class Transformer(nn.Module):
+class Encoder(nn.Module):
+    """A encoder model with self attention mechanism."""
 
     def __init__(
         self,
-        encoder,
-        decoder,
-        source_pad_idx,
-        target_pad_idx,
-        device,
+        n_src_vocab,
+        d_word_vec,
+        n_layers,
+        n_head,
+        d_k,
+        d_v,
+        d_model,
+        d_inner,
+        pad_idx,
+        dropout=0.1,
+        n_position=200,
     ):
 
         super().__init__()
 
-        self.encoder = encoder
-        self.decoder = decoder
-        self.source_pad_index = source_pad_idx
-        self.target_pad_index = target_pad_idx
-        self.device = device
-
-    def get_source_mask(self, source):
-        # source  = (bsize, source_len)
-        # 0: pad, 1: value
-        source_mask = source != self.source_pad_index
-
-        # unsqueeze(i) operation adds an i_th dimension to the item
-        source_mask = source_mask.unsqueeze(1)  # (bsize,1,source_len)
-        source_mask = source_mask.unsqueeze(2)  # (bsize,1,1,source_len)
-
-        # source_mask will be applied after calculating-
-        # the attention which has 4 dimensions (bsize,n_attn_heads,qlen,klen)
-        return source_mask
-
-    def get_target_mask(self, target):
-        # target = (bsize,target_len)
-        target_length = target.shape[1]
-
-        # Target mask = pad mask + look-ahead mask
-        # (bsize,1,1,target_len)
-        target_pad_mask = (target != self.target_pad_index).unsqueeze(1).unsqueeze(2)
-
-        # tril = 행렬의 하부 삼각 부분
-        target_subsequent_mask = torch.tril(
-            torch.ones((target_length, target_length), device=self.device)
-        ).bool()  # (target_len, target_len)
-
-        return target_subsequent_mask & target_pad_mask  # (bsize,1,tlen,tlen)
-
-    def forward(self, source, target):
-        # source = (bsize,slen)
-        # target = (bsize,tlen)
-
-        source_mask = self.get_source_mask(source)  # (bsize,1,1,slen)
-        target_mask = self.get_target_mask(target)  # (bsize,1,tlen,tlen)
-
-        encoder_output = self.encoder(source, source_mask)  # (bsize,slen,hdim)
-        decoder_output, decoder_attention = self.decoder(
-            target,
-            encoder_output,
-            source_mask,
-            target_mask,
+        self.src_word_emb = nn.Embedding(n_src_vocab, d_word_vec, padding_idx=pad_idx)
+        self.position_enc = PositionalEncoding(d_word_vec, n_position=n_position)
+        self.dropout = nn.Dropout(p=dropout)
+        self.layer_stack = nn.ModuleList(
+            [
+                EncoderLayer(d_model, d_inner, n_head, d_k, d_v, dropout=dropout)
+                for _ in range(n_layers)
+            ]
         )
-        # decoder_output = (bsiz,tlen,output_dim)
-        # decoder_attention = (bsize,num_attn_heads,tlen,slen)
-        return decoder_output, decoder_attention
+        self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
+        self.scale_emb = scale_emb
+        self.d_model = d_model
+
+    def forward(self, src_seq, src_mask, return_attns=False):
+
+        enc_slf_attn_list = []
+
+        # -- Forward
+        enc_output = self.src_word_emb(src_seq)
+        if self.scale_emb:
+            enc_output *= self.d_model**0.5
+        enc_output = self.dropout(self.position_enc(enc_output))
+        enc_output = self.layer_norm(enc_output)
+
+        for enc_layer in self.layer_stack:
+            enc_output, enc_slf_attn = enc_layer(enc_output, slf_attn_mask=src_mask)
+            enc_slf_attn_list += [enc_slf_attn] if return_attns else []
+
+        if return_attns:
+            return enc_output, enc_slf_attn_list
+        return (enc_output,)
